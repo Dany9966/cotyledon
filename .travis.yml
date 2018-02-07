@@ -1,6 +1,8 @@
-sudo: true
+sudo: required
+dist: trusty
 language: generic
 install:
+      - if \[ "$TOXENV" == "py35" \]; then sudo apt-get -qq update ; sudo apt-get install -y python3 ; fi
       - sudo pip install -U pip tox
 script:
       - tox
