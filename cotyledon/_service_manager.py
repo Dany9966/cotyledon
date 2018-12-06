@@ -84,7 +84,7 @@ class ServiceManager(_utils.SignalManager):
 
     _process_runner_already_created = False
 
-    def __init__(self, wait_interval=0.01, graceful_shutdown_timeout=60):
+    def __init__(self):
         """Creates the ServiceManager object
 
         :param wait_interval: time between each new process spawn
@@ -98,37 +98,17 @@ class ServiceManager(_utils.SignalManager):
         ServiceManager._process_runner_already_created = True
         super(ServiceManager, self).__init__()
 
-        # We use OrderedDict to start services in adding order
-        self._services = collections.OrderedDict()
-        self._running_services = collections.defaultdict(dict)
-        self._forktimes = []
-        self._graceful_shutdown_timeout = graceful_shutdown_timeout
-        self._wait_interval = wait_interval
-
-        self._dead = threading.Event()
-        # NOTE(sileht): Set it on startup, so first iteration
-        # will spawn initial workers
-        self._got_sig_chld = threading.Event()
-        self._got_sig_chld.set()
-
-        self._child_supervisor = None
-
-        self._hooks = {
-            'terminate': [],
-            'reload': [],
-            'new_worker': [],
-        }
-
         _utils.setproctitle("%s: master process [%s]" %
                             (_utils.get_process_name(), " ".join(sys.argv)))
+
+        # We use OrderedDict to start services in adding order
+        self._services = collections.OrderedDict()
 
         # Try to create a session id if possible
         try:
             os.setsid()
         except (OSError, AttributeError):
             pass
-
-        self._death_detection_pipe = multiprocessing.Pipe(duplex=False)
 
         signal.signal(signal.SIGINT, self._fast_exit)
         if os.name == 'posix':
@@ -209,7 +189,7 @@ class ServiceManager(_utils.SignalManager):
             # Reset forktimes to respawn services quickly
             self._forktimes = []
 
-    def run(self):
+    def run(self, wait_interval=0.01, graceful_shutdown_timeout=60):
         """Start and supervise services workers
 
         This method will start and supervise all children processes
@@ -218,22 +198,30 @@ class ServiceManager(_utils.SignalManager):
         All spawned processes are part of the same unix process group.
         """
 
+
+        self._running_services = collections.defaultdict(dict)
+        self._forktimes = []
+        self._graceful_shutdown_timeout = graceful_shutdown_timeout
+        self._wait_interval = wait_interval
+
+        self._dead = threading.Event()
+        # NOTE(sileht): Set it on startup, so first iteration
+        # will spawn initial workers
+        self._got_sig_chld = threading.Event()
+        self._got_sig_chld.set()
+
+        self._child_supervisor = None
+
+        self._hooks = {
+            'terminate': [],
+            'reload': [],
+            'new_worker': [],
+        }
+
+        self._death_detection_pipe = multiprocessing.Pipe(duplex=False)
+
         self._systemd_notify_once()
-        # On Windows, avoid creating subprocesses unless really needed.
-        # Forking is out of the question and "multiprocessing" may not help
-        # either as service objects aren't usually picklable.
-        if len(self._services) == 1 and os.name == 'nt':
-            service_id, conf = self._services.items()[0]
-            _service.ServiceWorker.create_and_wait(
-                conf,
-                service_id,
-                0,  # worker id
-                None,  # death detection pipe
-                self._hooks['new_worker'],
-                self._graceful_shutdown_timeout)
-        else:
-            self._child_supervisor = _utils.spawn(
-                self._child_supervisor_thread)
+        self._child_supervisor = _utils.spawn(self._child_supervisor_thread)
         self._wait_forever()
 
     def _child_supervisor_thread(self):
